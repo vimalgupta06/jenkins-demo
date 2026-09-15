@@ -1,75 +1,170 @@
 pipeline {
-    // Assign this label to one persistent Linux agent with Node 22+, npm and Docker.
-    agent { label 'node-docker-demo' }
+
+    agent any
+
+    tools {
+        nodejs 'NodeJS-26'
+    }
+
     options {
+        skipDefaultCheckout(true)
+        timestamps()
         disableConcurrentBuilds()
-        timeout(time: 10, unit: 'MINUTES')
-        buildDiscarder(logRotator(numToKeepStr: '10'))
+        skipStagesAfterUnstable()
     }
-    // Checks Git every minute; builds only when the configured branch changes.
+
+    // After the first build, detect pushes without clicking Build Now.
     triggers { pollSCM('* * * * *') }
-    environment {
-        APP_NAME = 'jenkins-node-demo'
-        APP_PORT = '3000'
-    }
+
     stages {
-        stage('Locate app') {
+
+        stage('Checkout') {
             steps {
-                script {
-                    // Supports either this folder at repo root or the parent repo.
-                    env.APP_DIR = fileExists('jenkins-demo/package.json') ? 'jenkins-demo' : '.'
-                }
+                checkout scm
             }
         }
-        stage('Install') {
-            steps { dir(env.APP_DIR) { sh 'node --version && npm ci' } }
+
+        stage('Install Dependencies') {
+            steps {
+                sh 'npm ci'
+            }
         }
+
         stage('Lint') {
-            steps { dir(env.APP_DIR) { sh 'npm run lint' } }
-        }
-        stage('Test') {
-            steps { dir(env.APP_DIR) { sh 'npm test' } }
-        }
-        stage('Build') {
-            steps { dir(env.APP_DIR) { sh 'npm run build' } }
-        }
-        stage('Package') {
-            steps { dir(env.APP_DIR) { sh 'docker build -t "$APP_NAME:$BUILD_NUMBER" .' } }
-        }
-        stage('Deploy') {
             steps {
-                dir(env.APP_DIR) {
-                    sh '''
-                        set -eu
-                        if docker container inspect "$APP_NAME" >/dev/null 2>&1; then
-                            docker rm -f "$APP_NAME"
-                        fi
-                        docker run -d --name "$APP_NAME" --restart unless-stopped \
-                            -p "$APP_PORT:3000" "$APP_NAME:$BUILD_NUMBER"
-                    '''
+                sh 'npm run lint'
+            }
+        }
+
+        stage('Tests') {
+            steps {
+                sh 'npm run test:ci'
+            }
+
+            post {
+                always {
+                    junit testResults: 'reports/junit/junit.xml'
                 }
             }
         }
-        stage('Verify deployment') {
+
+        stage('Build') {
+            steps {
+                sh 'npm run build'
+            }
+        }
+
+        stage('Package') {
             steps {
                 sh '''
-                    set -eu
-                    for attempt in $(seq 1 30); do
-                        status=$(docker inspect --format '{{.State.Health.Status}}' "$APP_NAME")
-                        if [ "$status" = healthy ]; then
-                            echo "Deployment healthy on agent port $APP_PORT"
+                    tar -czf node-demo-${BUILD_NUMBER}.tar.gz \
+                        dist package.json package-lock.json
+                '''
+
+                archiveArtifacts artifacts: "node-demo-${BUILD_NUMBER}.tar.gz"
+            }
+        }
+
+        stage('Deploy') {
+
+            when {
+                branch 'master'
+            }
+
+            steps {
+
+                sh '''
+                    set -e
+
+                    DEPLOY_ROOT=/opt/cicd-demo/node
+                    RELEASE_DIR="$DEPLOY_ROOT/releases/$BUILD_NUMBER"
+
+                    echo "Deploying build $BUILD_NUMBER"
+                    echo "Release directory: $RELEASE_DIR"
+
+                    mkdir -p "$DEPLOY_ROOT/releases"
+                    mkdir "$RELEASE_DIR"
+
+                    ARTIFACT="node-demo-${BUILD_NUMBER}.tar.gz"
+
+                    tar -xzf "$ARTIFACT" -C "$RELEASE_DIR"
+
+                    cd "$RELEASE_DIR"
+
+                    npm ci --omit=dev
+
+                    if [ -f "$DEPLOY_ROOT/app.pid" ]; then
+
+                        OLD_PID=$(cat "$DEPLOY_ROOT/app.pid" || true)
+
+                        if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+
+                            echo "Stopping old application: $OLD_PID"
+
+                            kill "$OLD_PID" || true
+
+                            sleep 2
+                        fi
+                    fi
+
+                    ln -sfn "$RELEASE_DIR" "$DEPLOY_ROOT/current"
+
+                    echo "Starting new application"
+
+                    JENKINS_NODE_COOKIE=dontKillMe \
+                    APP_VERSION="$BUILD_NUMBER" \
+                    PORT=3000 \
+                    nohup node dist/server.js \
+                    > "$DEPLOY_ROOT/app.log" 2>&1 < /dev/null &
+
+                    echo $! > "$DEPLOY_ROOT/app.pid"
+
+                    echo "Application PID:"
+                    cat "$DEPLOY_ROOT/app.pid"
+                '''
+            }
+        }
+
+        stage('Smoke Test') {
+
+            when {
+                branch 'master'
+            }
+
+            steps {
+                sh '''
+                    set -e
+                    for attempt in $(seq 1 15); do
+                        if curl -fsS --max-time 2 http://127.0.0.1:3000/health | node -e '
+                            let body = "";
+                            process.stdin.on("data", chunk => body += chunk);
+                            process.stdin.on("end", () => {
+                                try {
+                                    const health = JSON.parse(body);
+                                    process.exit(health.status === "UP" && health.version === process.env.BUILD_NUMBER ? 0 : 1);
+                                } catch { process.exit(1); }
+                            });
+                        '; then
+                            echo "New release is healthy"
                             exit 0
                         fi
                         sleep 2
                     done
-                    docker logs --tail 50 "$APP_NAME"
+                    echo "New release did not become healthy"
                     exit 1
                 '''
             }
         }
     }
+
     post {
-        success { echo 'App deployed successfully. Open http://<agent-host>:3000' }
-        failure { echo 'Pipeline failed. Inspect the first red stage in Console Output.' }
+
+        success {
+            echo 'PIPELINE SUCCESSFUL'
+        }
+
+        failure {
+            echo 'PIPELINE FAILED - inspect the failed stage; deployment may have already started'
+        }
     }
 }

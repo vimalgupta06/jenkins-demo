@@ -1,8 +1,7 @@
-import { createApp } from './app.js';
+const app = require("./app");
 
-const port = Number(process.env.PORT || 3000);
-const server = createApp();
-server.listen(port, '0.0.0.0', () => console.log(`App listening on port ${port}`));
-for (const signal of ['SIGTERM', 'SIGINT']) {
-  process.on(signal, () => server.close(() => process.exit(0)));
-}
+const port = process.env.PORT || 3000;
+
+app.listen(port, () => {
+    console.log(`Server running on port ${port}`);
+});

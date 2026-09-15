@@ -1,7 +1,23 @@
-export default [{
-  ignores: ['dist/**', 'node_modules/**'],
-}, {
-  files: ['**/*.js'],
-  languageOptions: { ecmaVersion: 'latest', sourceType: 'module', globals: { process: 'readonly', console: 'readonly' } },
-  rules: { 'no-unused-vars': 'error', 'no-undef': 'error', 'eqeqeq': 'error' },
-}];
+const js = require("@eslint/js");
+const globals = require("globals");
+
+module.exports = [
+    js.configs.recommended,
+
+    {
+        files: ["src/**/*.js"],
+        languageOptions: {
+            globals: globals.node
+        }
+    },
+
+    {
+        files: ["tests/**/*.js"],
+        languageOptions: {
+            globals: {
+                ...globals.node,
+                ...globals.jest
+            }
+        }
+    }
+];

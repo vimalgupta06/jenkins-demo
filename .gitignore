@@ -3,3 +3,5 @@ dist/
 coverage/
 *.log
 .env
+reports/
+node-demo-*.tar.gz

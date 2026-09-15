@@ -1,28 +1,52 @@
-import { test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
-import { createApp } from '../src/app.js';
+const request = require("supertest");
+const app = require("../src/app");
 
-const app = createApp();
-let base;
-before(async () => {
-  await new Promise(resolve => app.listen(0, '127.0.0.1', resolve));
-  base = `http://127.0.0.1:${app.address().port}`;
-});
-after(() => new Promise(resolve => app.close(resolve)));
+describe("Application API", () => {
 
-test('homepage displays the demo', async () => {
-  const response = await fetch(base);
-  assert.equal(response.status, 200);
-  assert.match(await response.text(), /Jenkins/);
-});
-test('health endpoint reports readiness', async () => {
-  const response = await fetch(`${base}/health`);
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { status: 'ok' });
-});
-test('unknown routes return 404', async () => {
-  assert.equal((await fetch(`${base}/missing`)).status, 404);
-});
-test('write requests are rejected', async () => {
-  assert.equal((await fetch(base, { method: 'POST' })).status, 405);
+    test("homepage shows calculator", async () => {
+        const response = await request(app).get("/");
+        expect(response.statusCode).toBe(200);
+        expect(response.text).toContain("Jenkins Calculator");
+    });
+
+    test("multiply endpoint calculates correctly", async () => {
+        const response = await request(app).get("/api/multiply?a=6&b=7");
+        expect(response.statusCode).toBe(200);
+        expect(response.body.result).toBe(42);
+    });
+
+    test.each(["a=&b=2", "b=2", "a=1&a=2&b=3", "a=Infinity&b=2"])(
+        "rejects malformed operands: %s", async query => {
+            expect((await request(app).get(`/api/add?${query}`)).statusCode).toBe(400);
+        }
+    );
+
+    test("supports decimals and negative numbers", async () => {
+        const response = await request(app).get("/api/add?a=-2.5&b=1");
+        expect(response.body.result).toBe(-1.5);
+    });
+
+    test("health endpoint returns UP", async () => {
+        const response = await request(app)
+            .get("/health");
+
+        expect(response.statusCode).toBe(200);
+        expect(response.body.status).toBe("UP");
+    });
+
+    test("add endpoint calculates correctly", async () => {
+        const response = await request(app)
+            .get("/api/add?a=20&b=22");
+
+        expect(response.statusCode).toBe(200);
+        expect(response.body.result).toBe(42);
+    });
+
+    test("add endpoint rejects invalid input", async () => {
+        const response = await request(app)
+            .get("/api/add?a=hello&b=10");
+
+        expect(response.statusCode).toBe(400);
+    });
+
 });
